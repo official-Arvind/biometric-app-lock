@@ -214,9 +214,13 @@ private fun checkMiuiFaceEnrollment(): Int? {
     val settingResult = RootShell.exec("settings get secure face_unlock_valid_feature")
     val settingValue = settingResult.out.firstOrNull()?.trim()
     return when (settingValue) {
-        "1" -> 1 // face service exists and face is enrolled
+        "1" -> 1
 
-        "0" -> 0 // face service exists but no face enrolled
+        // face service exists and face is enrolled
+
+        "0" -> 0
+
+        // face service exists but no face enrolled
 
         else -> 0 // face service exists, assume not yet enrolled
     }
