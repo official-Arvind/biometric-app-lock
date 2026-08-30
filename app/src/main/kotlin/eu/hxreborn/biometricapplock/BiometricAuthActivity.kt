@@ -57,6 +57,29 @@ open class BiometricAuthActivity : Activity() {
         }
         Log.i(TAG, "gating $targetPkg via=${javaClass.simpleName}")
         val pkg = targetPkg ?: return
+        val authenticators = 0
+        Log.d(TAG, "onCreate pkg=$targetPkg auth=$authenticators")
+
+        try {
+            val fm = getSystemService("face")
+            Log.d(TAG, "FaceManager = $fm")
+            if (fm != null) {
+                val hasEnrolled = fm.javaClass.getMethod("hasEnrolledTemplates").invoke(fm)
+                Log.d(TAG, "FaceManager hasEnrolledTemplates = $hasEnrolled")
+            } else {
+                // try miui.face
+                val mfm =
+                    Class
+                        .forName(
+                            "miui.face.FaceManager",
+                        ).getMethod("getInstance")
+                        .invoke(null)
+                Log.d(TAG, "miui FaceManager = $mfm")
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "FaceManager error: $e")
+        }
+
         val userId = intent.getIntExtra(EXTRA_TARGET_USER_ID, 0)
         intent.getStringExtra(EXTRA_TARGET_ACTIVITY)?.let { activity ->
             runCatching {
@@ -91,7 +114,10 @@ open class BiometricAuthActivity : Activity() {
             packageManager.getApplicationInfo(pkg, 0).loadLabel(packageManager).toString()
         }.getOrDefault(pkg)
 
+    private var miuiFaceAuth: eu.hxreborn.biometricapplock.util.MiuiFaceAuthenticator? = null
+
     override fun onDestroy() {
+        miuiFaceAuth?.cancel()
         Log.d(TAG, "onDestroy replied=$replied pkg=$targetPkg")
         if (!replied) onResult(AUTH_CANCELLED)
         super.onDestroy()
@@ -110,20 +136,26 @@ open class BiometricAuthActivity : Activity() {
             onResult(AUTH_CANCELLED)
             return
         }
-        if (authenticators and Authenticators.DEVICE_CREDENTIAL != 0 &&
-            bm.canAuthenticate(Authenticators.BIOMETRIC_WEAK) != BiometricManager.BIOMETRIC_SUCCESS
+
+        val cancellation = CancellationSignal()
+
+        if (android.os.Build.MANUFACTURER
+                .equals("Xiaomi", ignoreCase = true)
         ) {
-            // BiometricPrompt embedded credential dialog does NOT trigger custom face scanners (MIUI).
-            // We must use the full-screen KeyguardManager intent which inherently activates Face Unlock.
-            val km = getSystemService(KeyguardManager::class.java)
-            val intent = km.createConfirmDeviceCredentialIntent(title, null)
-            if (intent != null) {
-                startActivityForResult(intent, 999)
-                return
+            miuiFaceAuth =
+                eu.hxreborn.biometricapplock.util.MiuiFaceAuthenticator { success ->
+                    if (success) {
+                        runOnUiThread {
+                            cancellation.cancel()
+                            onResult(AUTH_OK)
+                        }
+                    }
+                }
+            if (miuiFaceAuth?.isAvailable() == true) {
+                miuiFaceAuth?.authenticate()
             }
         }
 
-        val cancellation = CancellationSignal()
         val executor = mainExecutor
         val requireConfirmation =
             App.from(this).prefsRepository.read(Prefs.UNLOCK_REQUIRE_CONFIRMATION)
@@ -177,21 +209,6 @@ open class BiometricAuthActivity : Activity() {
         // the system prompt steals focus and stops this activity, so only finish once there is a
         // result, or the prompt dies before the user can answer
         if (replied) finish()
-    }
-
-    override fun onActivityResult(
-        requestCode: Int,
-        resultCode: Int,
-        data: Intent?,
-    ) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 999) {
-            if (resultCode == android.app.Activity.RESULT_OK) {
-                onResult(AUTH_OK)
-            } else {
-                onResult(AUTH_CANCELLED)
-            }
-        }
     }
 
     private fun onResult(code: Int) {
