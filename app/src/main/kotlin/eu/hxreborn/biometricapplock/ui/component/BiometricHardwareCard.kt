@@ -218,7 +218,7 @@ private fun readBiometricState(context: Context): BiometricState {
     // For standard Android face (FEATURE_FACE), the BiometricManager status is usually enough, but we fall back.
     val faceEnrolled =
         if (hasFace) {
-            miuiFaceEnrollmentCount() ?: samsungFaceEnrollmentCount(context)
+            miuiFaceEnrollmentCount(context) ?: samsungFaceEnrollmentCount(context)
         } else {
             null
         }
