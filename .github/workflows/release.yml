@@ -55,10 +55,18 @@ jobs:
 
       - name: Rename APKs
         run: |
-          mv app/build/outputs/apk/release/app-release*.apk \
-             app/build/outputs/apk/release/biometric-app-lock-${{ github.ref_name }}-release.apk
-          mv app/build/outputs/apk/debug/app-debug.apk \
-             app/build/outputs/apk/debug/biometric-app-lock-${{ github.ref_name }}-debug.apk
+          # Sanitize branch/tag name (replaces / with -)
+          SAFE_REF=$(echo "${{ github.ref_name }}" | tr '/' '-')
+          
+          # Dynamically find and rename the release APK
+          for file in app/build/outputs/apk/release/*.apk; do
+            mv "$file" "app/build/outputs/apk/release/biometric-app-lock-${SAFE_REF}-release.apk"
+          done
+          
+          # Dynamically find and rename the debug APK
+          for file in app/build/outputs/apk/debug/*.apk; do
+            mv "$file" "app/build/outputs/apk/debug/biometric-app-lock-${SAFE_REF}-debug.apk"
+          done
 
       - name: Generate changelog
         id: cliff
@@ -75,8 +83,8 @@ jobs:
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || steps.mirror_tag.outputs.mirror_tag }}
           files: |
-            app/build/outputs/apk/release/biometric-app-lock-${{ github.ref_name }}-release.apk
-            app/build/outputs/apk/debug/biometric-app-lock-${{ github.ref_name }}-debug.apk
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
           body: ${{ steps.cliff.outputs.content }}
 
       - name: Upload APK artifacts for mirror job
@@ -84,8 +92,8 @@ jobs:
         with:
           name: release-apk
           path: |
-            app/build/outputs/apk/release/biometric-app-lock-${{ github.ref_name }}-release.apk
-            app/build/outputs/apk/debug/biometric-app-lock-${{ github.ref_name }}-debug.apk
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
           retention-days: 1
 
   mirror:
