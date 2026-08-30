@@ -91,6 +91,7 @@ fun withCredential(
 
 // one unavailable method never blocks the others
 fun usableAuthenticators(
+    context: Context,
     bm: BiometricManager,
     methods: Int,
 ): Int? {
@@ -101,6 +102,11 @@ fun usableAuthenticators(
         val requested = methodAuthenticators(method, weakOk)
         if (bm.canAuthenticate(requested) == BiometricManager.BIOMETRIC_SUCCESS) {
             authenticators = authenticators or requested
+        } else if (method == METHOD_BIOMETRIC && weakOk && hasFaceHardware(context)) {
+            val faceEnrolled = miuiFaceEnrollmentCount() ?: samsungFaceEnrollmentCount(context) ?: 0
+            if (faceEnrolled > 0) {
+                authenticators = authenticators or requested
+            }
         }
     }
     return authenticators.takeIf { it != 0 }
@@ -235,3 +241,24 @@ fun hasFaceHardware(context: Context): Boolean =
     context.packageManager.hasSystemFeature(PackageManager.FEATURE_FACE) ||
         hasFaceSensorInDump() ||
         hasMiuiFace()
+
+// Samsung convenience-class face doesn't expose its enrollment status to BiometricManager.canAuthenticate(WEAK).
+// We check the face_screen_lock secure setting which is 1 when face unlock is set up.
+fun samsungFaceEnrollmentCount(context: Context): Int? {
+    if (!android.os.Build.MANUFACTURER
+            .equals("samsung", ignoreCase = true)
+    ) {
+        return null
+    }
+    val faceScreenLock =
+        android.provider.Settings.Secure.getInt(
+            context.contentResolver,
+            "face_screen_lock",
+            -1,
+        )
+    return when (faceScreenLock) {
+        1 -> 1
+        0 -> 0
+        else -> null
+    }
+}

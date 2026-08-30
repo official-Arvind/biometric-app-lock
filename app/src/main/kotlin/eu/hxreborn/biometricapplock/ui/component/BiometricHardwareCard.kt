@@ -34,6 +34,7 @@ import eu.hxreborn.biometricapplock.util.MODALITY_FINGERPRINT
 import eu.hxreborn.biometricapplock.util.hasFaceHardware
 import eu.hxreborn.biometricapplock.util.inferredFaceClass
 import eu.hxreborn.biometricapplock.util.miuiFaceEnrollmentCount
+import eu.hxreborn.biometricapplock.util.samsungFaceEnrollmentCount
 import eu.hxreborn.biometricapplock.util.sensorClasses
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -213,8 +214,14 @@ private fun readBiometricState(context: Context): BiometricState {
 
     val fpEnrolled = readFingerprintCount(context)
     // For MIUI face (miui.face.FaceService), get enrollment count via root settings check.
-    // For standard Android face (FEATURE_FACE), the BiometricManager status is enough.
-    val faceEnrolled = if (hasFace) miuiFaceEnrollmentCount() else null
+    // For Samsung convenience face, check face_screen_lock setting.
+    // For standard Android face (FEATURE_FACE), the BiometricManager status is usually enough, but we fall back.
+    val faceEnrolled =
+        if (hasFace) {
+            miuiFaceEnrollmentCount() ?: samsungFaceEnrollmentCount(context)
+        } else {
+            null
+        }
     val lastAuthAgo = readLastAuthAgo(bm)
 
     return BiometricState(
