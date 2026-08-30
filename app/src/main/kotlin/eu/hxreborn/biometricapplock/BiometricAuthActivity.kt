@@ -1,6 +1,7 @@
 package eu.hxreborn.biometricapplock
 
 import android.app.Activity
+import android.app.KeyguardManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.LauncherApps
@@ -109,6 +110,19 @@ open class BiometricAuthActivity : Activity() {
             onResult(AUTH_CANCELLED)
             return
         }
+        if (authenticators and Authenticators.DEVICE_CREDENTIAL != 0 &&
+            bm.canAuthenticate(Authenticators.BIOMETRIC_WEAK) != BiometricManager.BIOMETRIC_SUCCESS
+        ) {
+            // BiometricPrompt embedded credential dialog does NOT trigger custom face scanners (MIUI).
+            // We must use the full-screen KeyguardManager intent which inherently activates Face Unlock.
+            val km = getSystemService(KeyguardManager::class.java)
+            val intent = km.createConfirmDeviceCredentialIntent(title, null)
+            if (intent != null) {
+                startActivityForResult(intent, 999)
+                return
+            }
+        }
+
         val cancellation = CancellationSignal()
         val executor = mainExecutor
         val requireConfirmation =
@@ -163,6 +177,21 @@ open class BiometricAuthActivity : Activity() {
         // the system prompt steals focus and stops this activity, so only finish once there is a
         // result, or the prompt dies before the user can answer
         if (replied) finish()
+    }
+
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?,
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 999) {
+            if (resultCode == android.app.Activity.RESULT_OK) {
+                onResult(AUTH_OK)
+            } else {
+                onResult(AUTH_CANCELLED)
+            }
+        }
     }
 
     private fun onResult(code: Int) {
