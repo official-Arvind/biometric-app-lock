@@ -112,11 +112,13 @@ fun sensorSettingName(
     authenticators: Int,
 ): String? =
     runCatching {
-        context
-            .getSystemService(BiometricManager::class.java)
-            .getStrings(authenticators)
-            .settingName
-            ?.toString()
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            context
+                .getSystemService(BiometricManager::class.java)
+                .getStrings(authenticators)
+                .settingName
+                ?.toString()
+        } else null
     }.getOrNull()?.takeIf { it.isNotBlank() }
 
 // the OS only names a different sensor set for Weak when a Class 2 sensor adds one
@@ -132,16 +134,96 @@ fun inferredFaceClass(context: Context): BiometricClass? {
 fun sensorClasses(): Map<Int, BiometricClass> =
     sensorClassCache ?: readSensorClasses().also { sensorClassCache = it }
 
-// per-sensor strength sits behind USE_BIOMETRIC_INTERNAL, only the root shell can reach it
-private fun readSensorClasses(): Map<Int, BiometricClass> =
-    Regex("updatedStrength:\\s*(\\d+), modality (\\d+)")
-        .findAll(RootShell.exec("dumpsys biometric").out.joinToString("\n"))
-        .mapNotNull { match ->
-            val strength = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
-            val modality = match.groupValues[2].toIntOrNull() ?: return@mapNotNull null
-            when {
-                strength <= Authenticators.BIOMETRIC_STRONG -> modality to BiometricClass.STRONG
-                strength <= Authenticators.BIOMETRIC_WEAK -> modality to BiometricClass.WEAK
-                else -> null
+// per-sensor strength sits behind USE_BIOMETRIC_INTERNAL, only the root shell can reach it.
+// Handles two dump formats:
+//   AOSP/A13+: "ID(n), oemStrength: S, updatedStrength: S, modality M"
+//   Samsung/A11 compact: "{M, S}"
+private fun readSensorClasses(): Map<Int, BiometricClass> {
+    val dump = RootShell.exec("dumpsys biometric").out.joinToString("\n")
+
+    // AOSP format: updatedStrength: <strength>, modality <modality>
+    val aosp =
+        Regex("""updatedStrength:\s*(\d+), modality (\d+)""")
+            .findAll(dump)
+            .mapNotNull { match ->
+                val strength = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+                val modality = match.groupValues[2].toIntOrNull() ?: return@mapNotNull null
+                classifyStrength(strength)?.let { modality to it }
             }
-        }.toMap()
+
+    // Samsung compact format: {<modality>, <strength>}
+    val samsung =
+        Regex("""\{(\d+),\s*(\d+)\}""")
+            .findAll(dump)
+            .mapNotNull { match ->
+                val modality = match.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+                val strength = match.groupValues[2].toIntOrNull() ?: return@mapNotNull null
+                classifyStrength(strength)?.let { modality to it }
+            }
+
+    return (aosp + samsung).toMap()
+}
+
+private fun classifyStrength(strength: Int): BiometricClass? =
+    when {
+        strength <= Authenticators.BIOMETRIC_STRONG -> BiometricClass.STRONG
+        strength <= Authenticators.BIOMETRIC_WEAK -> BiometricClass.WEAK
+        else -> null
+    }
+
+// Checks if modality 8 (face) appears in the biometric dump at ANY strength level,
+// including CONVENIENCE class sensors (e.g. Samsung face at strength 4095).
+// This is the root-based fallback for devices that don't expose FEATURE_FACE.
+@Volatile private var faceSensorDumpCache: Boolean? = null
+
+fun hasFaceSensorInDump(): Boolean =
+    faceSensorDumpCache ?: checkFaceSensorInDump().also { faceSensorDumpCache = it }
+
+private fun checkFaceSensorInDump(): Boolean {
+    val dump = RootShell.exec("dumpsys biometric").out.joinToString("\n")
+    // AOSP format: modality 8
+    if (Regex("""modality\s+8\b""").containsMatchIn(dump)) return true
+    // Samsung compact format: {8, *}
+    if (Regex("""\{8,\s*\d+\}""").containsMatchIn(dump)) return true
+    return false
+}
+
+// MIUI/HyperOS devices keep face unlock in a separate service (miui.face.FaceService)
+// that is completely outside the Android BiometricManager stack.
+// Returns: null = no MIUI face hardware, 0 = not enrolled, 1+ = enrolled
+@Volatile private var miuiFaceEnrollmentCache: Int = Int.MIN_VALUE // MIN_VALUE = not checked
+
+fun miuiFaceEnrollmentCount(): Int? {
+    if (miuiFaceEnrollmentCache != Int.MIN_VALUE) {
+        return if (miuiFaceEnrollmentCache < 0) null else miuiFaceEnrollmentCache
+    }
+    val result = checkMiuiFaceEnrollment()
+    miuiFaceEnrollmentCache = result ?: -1
+    return result
+}
+
+private fun checkMiuiFaceEnrollment(): Int? {
+    // First check if the MIUI face service exists at all
+    val serviceCheck = RootShell.exec("service check miui.face.FaceService")
+    val serviceExists = serviceCheck.out.any { it.contains("found", ignoreCase = true) }
+    if (!serviceExists) return null
+
+    // face_unlock_valid_feature=1 means face is enrolled in MIUI
+    val settingResult = RootShell.exec("settings get secure face_unlock_valid_feature")
+    val settingValue = settingResult.out.firstOrNull()?.trim()
+    return when (settingValue) {
+        "1" -> 1  // face service exists and face is enrolled
+        "0" -> 0  // face service exists but no face enrolled
+        else -> 0 // face service exists, assume not yet enrolled
+    }
+}
+
+fun hasMiuiFace(): Boolean = (miuiFaceEnrollmentCount() ?: -1) >= 0
+
+// Combined face hardware detection: standard API + root biometric dump + MIUI service.
+// This covers devices like Samsung (CONVENIENCE-class face) and Xiaomi MIUI (separate service)
+// that don't expose android.hardware.biometrics.face via PackageManager.
+fun hasFaceHardware(context: Context): Boolean =
+    context.packageManager.hasSystemFeature(PackageManager.FEATURE_FACE) ||
+        hasFaceSensorInDump() ||
+        hasMiuiFace()
